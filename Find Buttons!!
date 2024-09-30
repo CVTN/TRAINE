@@ -1,5 +1,5 @@
 local OrionLib = loadstring(game:HttpGet(('https://raw.githubusercontent.com/shlexware/Orion/main/source')))()local OrionLib = loadstring(game:HttpGet(('https://raw.githubusercontent.com/shlexware/Orion/main/source')))()
-local Window = OrionLib:MakeWindow({Name = "HUB CVTN", HidePremium = false, SaveConfig = true, ConfigFolder = "OrionTest"})
+local Window = OrionLib:MakeWindow({Name = "HUB CVTN | Find Buttons", HidePremium = false, SaveConfig = true, ConfigFolder = "OrionTest"})
 local Tab = Window:MakeTab({
 	Name = "TP",
 	Icon = "rbxassetid://4483345998",
@@ -8,7 +8,7 @@ local Tab = Window:MakeTab({
 Tab:AddButton({
 	Name = "NEXN SLAND",
 	Callback = function()
-      		print("button pressed")
+      		print("ATIVO A WEBCAM <*>")
 game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents"):WaitForChild("NextStage"):FireServer()
 
 	  
