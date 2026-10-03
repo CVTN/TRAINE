@@ -1,0 +1,304 @@
+
+
+    ----------------------------------------------------------------------
+    -- SERVIÇOS
+    ----------------------------------------------------------------------
+
+    local Players = game:GetService("Players")
+    local RunService = game:GetService("RunService")
+    local Workspace = game:GetService("Workspace")
+
+    local LocalPlayer = Players.LocalPlayer
+    local Camera = Workspace.CurrentCamera
+
+    ----------------------------------------------------------------------
+    -- CONFIGURAÇÃO
+    ----------------------------------------------------------------------
+
+    local Config = {
+        -- Raio do FOV em pixels na tela.
+        FOVRadius = 100,
+
+        -- Intensidade da suavização.
+        -- Valores maiores fazem a câmera acompanhar o alvo mais rapidamente.
+        -- Valores menores produzem movimento mais gradual.
+        Smoothness = 1,
+
+        -- "Head" ou "UpperTorso".
+        TargetBone = "Head",
+
+        -- Distância máxima do sistema.
+        MaxDistance = 1000,
+
+        -- Exige que exista uma linha de visão entre câmera e alvo.
+        RequireLineOfSight = true,
+    }
+
+    ----------------------------------------------------------------------
+    -- UTILITÁRIO: OBTÉM A PARTE DO PERSONAGEM
+    ----------------------------------------------------------------------
+
+    local function GetTargetPart(character: Model): BasePart?
+        -- Procura primeiro a parte configurada.
+        local part = character:FindFirstChild(Config.TargetBone)
+
+        -- Confirma que encontramos uma BasePart válida.
+        if part and part:IsA("BasePart") then
+            return part
+        end
+
+        -- Retorna nil se o personagem não possuir a parte.
+        return nil
+    end
+
+    ----------------------------------------------------------------------
+    -- UTILITÁRIO: VERIFICA SE O JOGADOR É UM ALVO VÁLIDO
+    ----------------------------------------------------------------------
+
+    local function IsValidTarget(player: Player): boolean
+        -- Não permite selecionar o próprio jogador.
+        if player == LocalPlayer then
+            return false
+        end
+
+        -- Obtém o personagem atual.
+        local character = player.Character
+
+        -- Sem personagem, não existe alvo.
+        if not character then
+            return false
+        end
+
+        -- Procura um Humanoid.
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+        -- Personagens mortos/inválidos são ignorados.
+        if not humanoid or humanoid.Health <= 0 then
+            return false
+        end
+
+        -- Verifica se existe a parte que queremos mirar.
+        if not GetTargetPart(character) then
+            return false
+        end
+
+        return true
+    end
+
+    ----------------------------------------------------------------------
+    -- FOV CHECK
+    ----------------------------------------------------------------------
+
+    local function IsInsideFOV(screenPosition: Vector2): boolean
+        -- Obtém a posição do centro da viewport.
+        local viewportSize = Camera.ViewportSize
+
+        local screenCenter = Vector2.new(
+            viewportSize.X / 2,
+            viewportSize.Y / 2
+        )
+
+        -- Calcula a diferença entre alvo e centro.
+        local offset = screenPosition - screenCenter
+
+        -- Magnitude é a distância euclidiana:
+        --
+        -- d = sqrt(x² + y²)
+        --
+        -- Como só precisamos comparar distâncias, podemos evitar o sqrt
+        -- comparando diretamente os quadrados.
+        local distanceSquared = offset.X^2 + offset.Y^2
+
+        return distanceSquared <= Config.FOVRadius^2
+    end
+
+    ----------------------------------------------------------------------
+    -- RAYCAST / LINE OF SIGHT
+    ----------------------------------------------------------------------
+
+    local function HasLineOfSight(targetPart: BasePart): boolean
+        -- Posição inicial do raio.
+        local origin = Camera.CFrame.Position
+
+        -- Vetor apontando da câmera até o alvo.
+        local direction = targetPart.Position - origin
+
+        -- Configurações do Raycast.
+        local raycastParams = RaycastParams.new()
+
+        -- Ignora o próprio personagem do jogador.
+        raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+        raycastParams.FilterDescendantsInstances = {
+            LocalPlayer.Character
+        }
+
+        -- Executa o Raycast.
+        local result = Workspace:Raycast(
+            origin,
+            direction,
+            raycastParams
+        )
+
+        -- Nenhum objeto bloqueou o caminho.
+        if not result then
+            return true
+        end
+
+        -- Se o primeiro objeto atingido pertence ao personagem alvo,
+        -- existe linha de visão.
+        return result.Instance:IsDescendantOf(targetPart.Parent)
+    end
+
+    ----------------------------------------------------------------------
+    -- DISTÂNCIA DO ALVO À CÂMERA
+    ----------------------------------------------------------------------
+
+    local function GetWorldDistance(targetPart: BasePart): number
+        -- Calcula a distância 3D entre câmera e alvo.
+        return (targetPart.Position - Camera.CFrame.Position).Magnitude
+    end
+
+    ----------------------------------------------------------------------
+    -- PROCURA O MELHOR ALVO
+    ----------------------------------------------------------------------
+
+    local function FindBestTarget(): BasePart?
+        local bestTarget: BasePart? = nil
+        local bestDistance = math.huge
+
+        -- Centro da tela.
+        local viewportSize = Camera.ViewportSize
+
+        local screenCenter = Vector2.new(
+            viewportSize.X / 2,
+            viewportSize.Y / 2
+        )
+
+        for _, player in Players:GetPlayers() do
+            if IsValidTarget(player) then
+                local character = player.Character
+
+                if character then
+                    local targetPart = GetTargetPart(character)
+
+                    if targetPart then
+                        -- Converte a posição 3D do alvo para coordenadas 2D.
+                        local screenPoint, onScreen =
+                            Camera:WorldToViewportPoint(targetPart.Position)
+
+                        if onScreen then
+                            local targetScreenPosition = Vector2.new(
+                                screenPoint.X,
+                                screenPoint.Y
+                            )
+
+                            -- Primeiro filtro: FOV.
+                            if IsInsideFOV(targetScreenPosition) then
+
+                                -- Segundo filtro: distância 3D.
+                                local worldDistance =
+                                    GetWorldDistance(targetPart)
+
+                                if worldDistance <= Config.MaxDistance then
+
+                                    -- Terceiro filtro: linha de visão.
+                                    local visible = true
+
+                                    if Config.RequireLineOfSight then
+                                        visible =
+                                            HasLineOfSight(targetPart)
+                                    end
+
+                                    if visible then
+                                        -- Distância 2D ao centro da tela.
+                                        local offset =
+                                            targetScreenPosition - screenCenter
+
+                                        local screenDistance =
+                                            offset.Magnitude
+
+                                        -- Escolhe o alvo mais próximo
+                                        -- do centro do FOV.
+                                        if screenDistance < bestDistance then
+                                            bestDistance = screenDistance
+                                            bestTarget = targetPart
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        return bestTarget
+    end
+
+    ----------------------------------------------------------------------
+    -- SMOOTH AIM
+    ----------------------------------------------------------------------
+
+    local function SmoothAimAt(targetPart: BasePart)
+        -- Posição atual da câmera.
+        local cameraPosition = Camera.CFrame.Position
+
+        -- Vetor que aponta para o alvo.
+        local direction =
+            (targetPart.Position - cameraPosition).Unit
+
+        -- Cria uma orientação olhando para o alvo.
+        local desiredCFrame =
+            CFrame.lookAt(cameraPosition, cameraPosition + direction)
+
+        -- Interpolação linear entre a orientação atual e desejada.
+        --
+        -- alpha = 0:
+        --   mantém a orientação atual.
+        --
+        -- alpha = 1:
+        --   chega imediatamente à orientação desejada.
+        --
+        -- Valores intermediários fazem a transição gradual.
+        Camera.CFrame = Camera.CFrame:Lerp(
+            desiredCFrame,
+            Config.Smoothness
+        )
+    end
+
+    ----------------------------------------------------------------------
+    -- LOOP PRINCIPAL
+    ----------------------------------------------------------------------
+
+    RunService:BindToRenderStep(
+        "LegitimateAimAssist",
+        Enum.RenderPriority.Camera.Value + 1,
+        function()
+            -- Procura um alvo válido.
+            local target = FindBestTarget()
+
+            -- Se houver um alvo, aplica a suavização.
+            if target then
+                SmoothAimAt(target)
+            end
+        end
+    )
+
+    ----------------------------------------------------------------------
+    -- EXEMPLOS DE CONFIGURAÇÃO
+    ----------------------------------------------------------------------
+
+    -- Mira na cabeça:
+    -- Config.TargetBone = "Head"
+
+    -- Mira no torso:
+    -- Config.TargetBone = "UpperTorso"
+
+    -- Aumenta o FOV:
+    -- Config.FOVRadius = 250
+
+    -- Movimento mais suave:
+    -- Config.Smoothness = 0.05
+
+    -- Movimento mais rápido:
+    -- Config.Smoothness = 0.20
