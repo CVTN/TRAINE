@@ -1,0 +1,467 @@
+--!strict
+
+----------------------------------------------------------------------
+-- SERVIÇOS
+----------------------------------------------------------------------
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local Camera = Workspace.CurrentCamera
+
+----------------------------------------------------------------------
+-- CONFIGURAÇÃO (Variáveis do Menu)
+----------------------------------------------------------------------
+local Config = {
+	Enabled = true,
+	ActivationKey = Enum.KeyCode.RightControl :: Enum.KeyCode | Enum.UserInputType,
+	MenuKey = Enum.KeyCode.Insert,
+
+	FOVRadius = 200,
+	Smoothness = 0.15, -- 0.0 a 1.0
+
+	TargetBone = "Head",
+	MaxDistance = 1000,
+
+	TeamCheck = true,
+	RequireLineOfSight = true,
+}
+
+----------------------------------------------------------------------
+-- ESTADO
+----------------------------------------------------------------------
+local ActivationHeld = false
+local MenuVisible = true
+local ListeningForKey = false
+local IndicatorPosition: Vector2? = nil
+
+----------------------------------------------------------------------
+-- MECÂNICA DO SCRIPT 2 (Lógica de Alvo para Jogadores)
+----------------------------------------------------------------------
+
+local function GetTargetPart(character: Model): BasePart?
+	local part = character:FindFirstChild(Config.TargetBone)
+	if part and part:IsA("BasePart") then
+		return part
+	end
+	return nil
+end
+
+local function IsSameTeam(player: Player): boolean
+	if not Config.TeamCheck then return false end
+	if LocalPlayer.Team ~= nil and player.Team ~= nil then
+		return LocalPlayer.Team == player.Team
+	end
+	return false
+end
+
+local function IsValidTarget(player: Player): boolean
+	if player == LocalPlayer then return false end
+	if IsSameTeam(player) then return false end
+
+	local character = player.Character
+	if not character then return false end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid or humanoid.Health <= 0 then return false end
+
+	if not GetTargetPart(character) then return false end
+
+	return true
+end
+
+local function IsInsideFOV(screenPosition: Vector2): boolean
+	local viewportSize = Camera.ViewportSize
+	local screenCenter = Vector2.new(viewportSize.X / 2, viewportSize.Y / 2)
+	local offset = screenPosition - screenCenter
+	
+	local distanceSquared = offset.X^2 + offset.Y^2
+	return distanceSquared <= Config.FOVRadius^2
+end
+
+local function HasLineOfSight(targetPart: BasePart): boolean
+	local origin = Camera.CFrame.Position
+	local direction = targetPart.Position - origin
+
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+	if LocalPlayer.Character then
+		raycastParams.FilterDescendantsInstances = {LocalPlayer.Character}
+	end
+
+	local result = Workspace:Raycast(origin, direction, raycastParams)
+	if not result then return true end
+
+	return result.Instance:IsDescendantOf(targetPart.Parent)
+end
+
+local function GetWorldDistance(targetPart: BasePart): number
+	return (targetPart.Position - Camera.CFrame.Position).Magnitude
+end
+
+local function FindBestTarget(): BasePart?
+	local bestTarget: BasePart? = nil
+	local bestDistance = math.huge
+
+	local viewportSize = Camera.ViewportSize
+	local screenCenter = Vector2.new(viewportSize.X / 2, viewportSize.Y / 2)
+
+	for _, player in Players:GetPlayers() do
+		if IsValidTarget(player) then
+			local character = player.Character
+			local targetPart = GetTargetPart(character)
+
+			if targetPart then
+				local screenPoint, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+
+				if onScreen and screenPoint.Z > 0 then
+					local targetScreenPosition = Vector2.new(screenPoint.X, screenPoint.Y)
+
+					if IsInsideFOV(targetScreenPosition) then
+						local worldDistance = GetWorldDistance(targetPart)
+
+						if worldDistance <= Config.MaxDistance then
+							local visible = true
+
+							if Config.RequireLineOfSight then
+								visible = HasLineOfSight(targetPart)
+							end
+
+							if visible then
+								local offset = targetScreenPosition - screenCenter
+								local screenDistance = offset.Magnitude
+
+								if screenDistance < bestDistance then
+									bestDistance = screenDistance
+									bestTarget = targetPart
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	return bestTarget
+end
+
+local function SmoothAimAt(targetPart: BasePart)
+	local cameraPosition = Camera.CFrame.Position
+	local direction = (targetPart.Position - cameraPosition).Unit
+	local desiredCFrame = CFrame.lookAt(cameraPosition, cameraPosition + direction)
+
+	Camera.CFrame = Camera.CFrame:Lerp(
+		desiredCFrame,
+		math.clamp(Config.Smoothness, 0, 1)
+	)
+end
+
+----------------------------------------------------------------------
+-- GUI DO SCRIPT 1 + SELETOR DE TECLA
+----------------------------------------------------------------------
+
+local Gui = Instance.new("ScreenGui")
+Gui.Name = "LegitAimSystem"
+Gui.ResetOnSpawn = false
+Gui.IgnoreGuiInset = true
+Gui.Parent = PlayerGui
+
+-- FOV CIRCLE
+local FOVCircle = Instance.new("Frame")
+FOVCircle.Name = "FOVCircle"
+FOVCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+FOVCircle.Position = UDim2.fromScale(0.5, 0.5)
+FOVCircle.Size = UDim2.fromOffset(Config.FOVRadius * 2, Config.FOVRadius * 2)
+FOVCircle.BackgroundTransparency = 1
+FOVCircle.BorderSizePixel = 0
+FOVCircle.Parent = Gui
+
+local FOVCorner = Instance.new("UICorner")
+FOVCorner.CornerRadius = UDim.new(1, 0)
+FOVCorner.Parent = FOVCircle
+
+local FOVStroke = Instance.new("UIStroke")
+FOVStroke.Color = Color3.fromRGB(80, 170, 255)
+FOVStroke.Thickness = 1
+FOVStroke.Transparency = 0.15
+FOVStroke.Parent = FOVCircle
+
+-- TARGET INDICATOR (Bolinha Verde)
+local Indicator = Instance.new("Frame")
+Indicator.Name = "TargetIndicator"
+Indicator.AnchorPoint = Vector2.new(0.5, 0.5)
+Indicator.Size = UDim2.fromOffset(12, 12)
+Indicator.BackgroundColor3 = Color3.fromRGB(80, 220, 140)
+Indicator.BorderSizePixel = 0
+Indicator.Visible = false
+Indicator.Parent = Gui
+
+local IndicatorCorner = Instance.new("UICorner")
+IndicatorCorner.CornerRadius = UDim.new(1, 0)
+IndicatorCorner.Parent = Indicator
+
+local IndicatorStroke = Instance.new("UIStroke")
+IndicatorStroke.Color = Color3.fromRGB(220, 255, 235)
+IndicatorStroke.Thickness = 1
+IndicatorStroke.Parent = Indicator
+
+-- PANEL
+local Panel = Instance.new("Frame")
+Panel.Name = "Panel"
+Panel.Size = UDim2.fromOffset(330, 480)
+Panel.Position = UDim2.fromOffset(30, 80)
+Panel.BackgroundColor3 = Color3.fromRGB(20, 22, 28)
+Panel.BorderSizePixel = 0
+Panel.Visible = true
+Panel.Parent = Gui
+
+local PanelCorner = Instance.new("UICorner")
+PanelCorner.CornerRadius = UDim.new(0, 10)
+PanelCorner.Parent = Panel
+
+local PanelStroke = Instance.new("UIStroke")
+PanelStroke.Color = Color3.fromRGB(55, 60, 72)
+PanelStroke.Thickness = 1
+PanelStroke.Parent = Panel
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -30, 0, 30)
+Title.Position = UDim2.fromOffset(15, 12)
+Title.BackgroundTransparency = 1
+Title.Text = "LEGIT AIM SYSTEM"
+Title.TextColor3 = Color3.fromRGB(240, 240, 245)
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 18
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = Panel
+
+local Subtitle = Instance.new("TextLabel")
+Subtitle.Size = UDim2.new(1, -30, 0, 25)
+Subtitle.Position = UDim2.fromOffset(15, 40)
+Subtitle.BackgroundTransparency = 1
+Subtitle.Text = "Insert: Abrir/Fechar Menu"
+Subtitle.TextColor3 = Color3.fromRGB(130, 135, 150)
+Subtitle.Font = Enum.Font.Gotham
+Subtitle.TextSize = 11
+Subtitle.TextXAlignment = Enum.TextXAlignment.Left
+Subtitle.Parent = Panel
+
+local function CreateButton(text: string, y: number): TextButton
+	local button = Instance.new("TextButton")
+	button.Size = UDim2.new(1, -30, 0, 34)
+	button.Position = UDim2.fromOffset(15, y)
+	button.BackgroundColor3 = Color3.fromRGB(30, 33, 42)
+	button.BorderSizePixel = 0
+	button.TextColor3 = Color3.fromRGB(230, 232, 238)
+	button.Font = Enum.Font.GothamMedium
+	button.TextSize = 13
+	button.Text = text
+	button.Parent = Panel
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 6)
+	corner.Parent = button
+	return button
+end
+
+local function CreateLabel(text: string, y: number): TextLabel
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1, -30, 0, 22)
+	label.Position = UDim2.fromOffset(15, y)
+	label.BackgroundTransparency = 1
+	label.Text = text
+	label.TextColor3 = Color3.fromRGB(170, 175, 188)
+	label.Font = Enum.Font.Gotham
+	label.TextSize = 12
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.Parent = Panel
+	return label
+end
+
+-- CONTROLES DA INTERFACE
+local EnabledButton = CreateButton("Enabled: ON", 75)
+local KeybindButton = CreateButton("Keybind: RightControl", 115)
+local TeamButton = CreateButton("Team Check: ON", 155)
+local VisibilityButton = CreateButton("Line of Sight: ON", 195)
+local BoneButton = CreateButton("Target Bone: Head", 235)
+
+local FOVLabel = CreateLabel("FOV Radius: 200", 280)
+local FOVBox = Instance.new("TextBox")
+FOVBox.Size = UDim2.new(1, -30, 0, 30)
+FOVBox.Position = UDim2.fromOffset(15, 305)
+FOVBox.BackgroundColor3 = Color3.fromRGB(30, 33, 42)
+FOVBox.BorderSizePixel = 0
+FOVBox.TextColor3 = Color3.fromRGB(235, 238, 245)
+FOVBox.Font = Enum.Font.Gotham
+FOVBox.TextSize = 12
+FOVBox.Text = tostring(Config.FOVRadius)
+FOVBox.ClearTextOnFocus = false
+FOVBox.Parent = Panel
+local FOVCorner2 = Instance.new("UICorner")
+FOVCorner2.CornerRadius = UDim.new(0, 6)
+FOVCorner2.Parent = FOVBox
+
+local SmoothLabel = CreateLabel("Smoothness: 0.15", 345)
+local SmoothBox = Instance.new("TextBox")
+SmoothBox.Size = UDim2.new(1, -30, 0, 30)
+SmoothBox.Position = UDim2.fromOffset(15, 370)
+SmoothBox.BackgroundColor3 = Color3.fromRGB(30, 33, 42)
+SmoothBox.BorderSizePixel = 0
+SmoothBox.TextColor3 = Color3.fromRGB(235, 238, 245)
+SmoothBox.Font = Enum.Font.Gotham
+SmoothBox.TextSize = 12
+SmoothBox.Text = string.format("%.2f", Config.Smoothness)
+SmoothBox.ClearTextOnFocus = false
+SmoothBox.Parent = Panel
+local SmoothCorner = Instance.new("UICorner")
+SmoothCorner.CornerRadius = UDim.new(0, 6)
+SmoothCorner.Parent = SmoothBox
+
+-- NOME FORMATADO DA TECLA SELECIONADA
+local function GetKeyName(key: Enum.KeyCode | Enum.UserInputType): string
+	if key == Enum.UserInputType.MouseButton1 then return "Mouse Esquerdo (M1)" end
+	if key == Enum.UserInputType.MouseButton2 then return "Mouse Direito (M2)" end
+	if key == Enum.UserInputType.MouseButton3 then return "Mouse Scroll (M3)" end
+	return key.Name
+end
+
+local function UpdateGUI()
+	EnabledButton.Text = "Enabled: " .. (Config.Enabled and "ON" or "OFF")
+	KeybindButton.Text = ListeningForKey and "Pressione uma tecla..." or ("Keybind: " .. GetKeyName(Config.ActivationKey))
+	TeamButton.Text = "Team Check: " .. (Config.TeamCheck and "ON" or "OFF")
+	VisibilityButton.Text = "Line of Sight: " .. (Config.RequireLineOfSight and "ON" or "OFF")
+	BoneButton.Text = "Target Bone: " .. Config.TargetBone
+	FOVLabel.Text = "FOV Radius: " .. tostring(Config.FOVRadius)
+	SmoothLabel.Text = "Smoothness: " .. string.format("%.2f", Config.Smoothness)
+	FOVBox.Text = tostring(Config.FOVRadius)
+	SmoothBox.Text = string.format("%.2f", Config.Smoothness)
+	FOVCircle.Size = UDim2.fromOffset(Config.FOVRadius * 2, Config.FOVRadius * 2)
+end
+
+-- EVENTOS DOS BOTÕES
+EnabledButton.MouseButton1Click:Connect(function()
+	Config.Enabled = not Config.Enabled
+	if not Config.Enabled then
+		Indicator.Visible = false
+		IndicatorPosition = nil
+	end
+	UpdateGUI()
+end)
+
+KeybindButton.MouseButton1Click:Connect(function()
+	ListeningForKey = true
+	UpdateGUI()
+end)
+
+TeamButton.MouseButton1Click:Connect(function()
+	Config.TeamCheck = not Config.TeamCheck
+	UpdateGUI()
+end)
+
+VisibilityButton.MouseButton1Click:Connect(function()
+	Config.RequireLineOfSight = not Config.RequireLineOfSight
+	UpdateGUI()
+end)
+
+BoneButton.MouseButton1Click:Connect(function()
+	Config.TargetBone = Config.TargetBone == "Head" and "UpperTorso" or "Head"
+	UpdateGUI()
+end)
+
+FOVBox.FocusLost:Connect(function()
+	local value = tonumber(FOVBox.Text)
+	if value then Config.FOVRadius = math.clamp(value, 25, 2000) end
+	UpdateGUI()
+end)
+
+SmoothBox.FocusLost:Connect(function()
+	local value = tonumber(SmoothBox.Text)
+	if value then Config.Smoothness = math.clamp(value, 0, 1) end
+	UpdateGUI()
+end)
+
+----------------------------------------------------------------------
+-- CONTROLES & CAPTURA DE TECLA
+----------------------------------------------------------------------
+
+UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
+	-- Se estiver aguardando o clique do usuário para redefinir o Keybind
+	if ListeningForKey then
+		if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode ~= Enum.KeyCode.Unknown then
+			Config.ActivationKey = input.KeyCode
+			ListeningForKey = false
+			UpdateGUI()
+			return
+		elseif input.UserInputType == Enum.UserInputType.MouseButton1 
+			or input.UserInputType == Enum.UserInputType.MouseButton2 
+			or input.UserInputType == Enum.UserInputType.MouseButton3 then
+			Config.ActivationKey = input.UserInputType
+			ListeningForKey = false
+			UpdateGUI()
+			return
+		end
+	end
+
+	if gameProcessed then return end
+
+	-- Checa ativação por Tecla ou por Botão do Mouse
+	if input.KeyCode == Config.ActivationKey or input.UserInputType == Config.ActivationKey then
+		ActivationHeld = true
+	end
+
+	-- Alternar Visibilidade do Menu (Tecla Insert)
+	if input.KeyCode == Config.MenuKey then
+		MenuVisible = not MenuVisible
+		Panel.Visible = MenuVisible
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input: InputObject)
+	if input.KeyCode == Config.ActivationKey or input.UserInputType == Config.ActivationKey then
+		ActivationHeld = false
+		Indicator.Visible = false
+		IndicatorPosition = nil
+	end
+end)
+
+local function UpdateIndicator(targetPart: BasePart)
+	local screenPoint, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+	if not onScreen or screenPoint.Z <= 0 then
+		Indicator.Visible = false
+		return
+	end
+
+	local position = Vector2.new(screenPoint.X, screenPoint.Y)
+	if not IndicatorPosition then IndicatorPosition = position end
+
+	IndicatorPosition = IndicatorPosition:Lerp(position, math.clamp(Config.Smoothness, 0, 1))
+	Indicator.Position = UDim2.fromOffset(IndicatorPosition.X, IndicatorPosition.Y)
+	Indicator.Visible = true
+end
+
+----------------------------------------------------------------------
+-- LOOP PRINCIPAL (Aim Assist + Visual)
+----------------------------------------------------------------------
+
+RunService:BindToRenderStep("LegitimateAimAssist", Enum.RenderPriority.Camera.Value + 1, function()
+	if not Config.Enabled or not ActivationHeld then
+		Indicator.Visible = false
+		IndicatorPosition = nil
+		return
+	end
+
+	local target = FindBestTarget()
+
+	if target then
+		UpdateIndicator(target)
+		SmoothAimAt(target)
+	else
+		Indicator.Visible = false
+		IndicatorPosition = nil
+	end
+end)
+
+UpdateGUI()
